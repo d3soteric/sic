@@ -5,8 +5,7 @@ There is no vulnerability being exploited in Microsofts services, and requests a
 
 The script sends a series of web requests to authenticate as a domain user against office365 (login.microsoftonline.com).  (The authentication process is done once per execution of the script regardless of how many users’ to be checked).
 
-The script then checks against the user-provided list to see if any of the users have files in their shared with everyone folder
-that the authenticated user can view.
+The script then checks against the user-provided list of usernames (username only, no domain) to see if any of the users have files in their shared with everyone folder that the authenticated user can view.
 
 A list of filenames and links to each file is returned for further analysis.
 
