@@ -3,61 +3,50 @@
     PowerShell Script for Interrogating the Office 365 Graph for Over-Shared Items
 
 .DESCRIPTION
-    Example URL for finding proper value for parameters below
-    https://office365<orgDomain>-my.sharepoint.com/personal/<user>_<officeDomain>_<tld>/...
+    This tool searches through a list of user's shared with everyone folder so that
+    sensitive data can be detected by security professionals before malicious actors find the data
 
 .PARAMETER inFile
-    Location of new line-delimited file of usernames to search for available files from
+    Location of new line-delimited file of usernames to search for available files from their "Shared with Everyone Folder"
 
-
-.PARAMETER officeDomain
-    This parameter defines the domain for the office account of the organization being accessed
-    This could potentially be the same as the orgDomain.  Inspecting the URL when visiting OneDrive
-    in a browser will disclose this value  
-
-.PARAMETER orgDomain
-    This parameter is the organization name and may be the same as officeDomain.  
-    Inspecting the URL when visiting OneDrive in a browser will disclose this value  
-
-.Parameter tld
-    This parameter is needed to specify the top-level domain which appears in OneDrive URLs.  
-    e.g. com, org, eu, ca, us, biz...etc.
+.PARAMETER inFile
+    Location to safe output to
 
 .Parameter proxy
-    This parameter is a switch for turning the proxy settings on or off (default)
+    This parameter is a switch for turning the proxy settings on or off
 #>
 
 ### Read Variables
 param (
     [Parameter(Mandatory=$true)][string]$inFile,
-    [Parameter(Mandatory=$true)][string]$officeDomain,
-    [Parameter(Mandatory=$true)][string]$orgDomain,
-    [Parameter(Mandatory=$true)][string]$tld,
-    [Parameter(Mandatory=$false)][switch]$proxy
+    [Parameter(Mandatory=$true)][string]$outFile,
+    [Parameter(Mandatory=$false)][switch]$proxy,
+    [Parameter(Mandatory=$false)][string]$proxyH,
+    [Parameter(Mandatory=$false)][string]$proxyP
     )
 
 ###########################
-### Gather Auth. Tokens ###
+###      Shoutouts      ###
+###########################
+# Thanks to these and any I missed for teaching me some of the concepts that helped me write this
+# Microsoft: Docs like https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/add-member?view=powershell-6
+# AnnaWY: ignore cert validity for proxy https://social.technet.microsoft.com/Forums/ie/en-US/733a9327-5409-4e02-89a4-ff61f8661b55/any-way-to-get-around?forum=winserverpowershell 
+# The Scripting Guys: array check  https://blogs.technet.microsoft.com/heyscriptingguy/2015/11/06/powertip-find-if-variable-is-array-2/ 
+# Cédric Rup: index of current item https://stackoverflow.com/questions/1785474/get-index-of-current-item-in-powershell-loop
+# Andy Arismendi: difference between write host write output, etc. https://stackoverflow.com/questions/8755497/which-should-i-use-write-host-write-output-or-consolewriteline
+# CB.: Writing to files https://stackoverflow.com/questions/20858133/output-powershell-variables-to-a-text-file
+# @_wald0, @CptJesus, and @harmj0y for giving me an idea about how to start licensing https://github.com/BloodHoundAD/BloodHound
+
+###########################
+###        Proxy        ###
 ###########################
 
-###Variables for Session Tracking and Gathering Credentials
-
-function Get-Cred{
-$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-$cred = Get-Credential
-$encodedUser = [uri]::EscapeDataString($Cred.UserName)
-$encodedPass = [uri]::EscapeDataString($Cred.GetNetworkCredential().Password)
-Get-First $encodedUser
-}
-
-function Set-Proxy{
-# Enable Proxy
-    if ($proxy -eq $true) {
-        $proxyString = "http://192.168.1.30:8888"
-        $proxyUri = new-object System.Uri($proxyString)
-        [System.Net.WebRequest]::DefaultWebProxy = new-object System.Net.WebProxy ($proxyUri, $true)
-        ###Trust Self-signed Certificates
-        add-type @"
+if ($proxy){
+    $proxyL = "http://${proxyH}:${proxyP}"
+    $proxyUri = new-object System.Uri($proxyL)
+    [System.Net.WebRequest]::DefaultWebProxy = new-object System.Net.WebProxy ($proxyUri, $true)
+    ###Trust Self-signed Certificates
+    add-type @"
     using System.Net;
     using System.Security.Cryptography.X509Certificates;
     public class TrustAllCertsPolicy : ICertificatePolicy {
@@ -68,15 +57,27 @@ function Set-Proxy{
         }
     } 
 "@
-
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy 
-    }
-    else{
-
-    }
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy 
 }
 
+###########################
+###    Authenticate     ###
+###########################
+
+function Get-Cred{
+$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$cred = Get-Credential
+$encodedUser = [uri]::EscapeDataString($Cred.UserName)
+$encodedPass = [uri]::EscapeDataString($Cred.GetNetworkCredential().Password)
+Get-First $encodedUser
+}
+
+###########################
+###     Web Requests    ###
+###########################
+
 function Get-First{
+    Write-Host "Attempting to Authenticate with Supplied Credentials `r`n "
     $theURL = "https://portal.office.com/onedrive?msafed=0&wsucxt=2&username=${encodedUser}"
     $userAgent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:50.0) Gecko/20100101 Firefox/60.1"
     $webRequest1 = Invoke-WebRequest -MaximumRedirection 2 -WebSession $session -ContentType $accept -userAgent $userAgent -Method GET -Uri $theURL
@@ -94,7 +95,7 @@ function Parse-BodyFirst{
     ## Some Encoding for Later
     $encodedCanary = [uri]::EscapeDataString($canary)
     Get-Second $userAgent $encodedCanary $sCtx $hpgrequestid $flowToken
-    }
+}
 
 function Get-Second{
     # Set Vars and Make the 2nd web request
@@ -107,7 +108,7 @@ function Get-Second{
     $body = "login=${encodedUser}&loginfmt=${encodedUser}&passwd=${encodedPass}&canary=${encodedCanary}&ctx=${sCtx}&hpgrequestid=${hpgrequestid}&flowToken=${flowToken}"
     $webRequest2 = Invoke-WebRequest -MaximumRedirection 0 -WebSession $session -Method POST -Uri $theURL -userAgent $userAgent -ContentType $contentType -Body $body | Select-Object -ExpandProperty Content
     Parse-BodySecond $webRequest2 $sCtx $hpgrequestid $flowToken $encodedCanary $userAgent $contentType
-    }
+}
 
 function Parse-BodySecond{
     # Parse the response received above
@@ -228,7 +229,7 @@ function Parse-Eighth{
 }
 
 function Get-Ninth{
-    Get-Content .\users.txt | ForEach-Object{
+    Get-Content $inFile | ForEach-Object{
         $user = $_
         $personal = $absoluteURLObject.segments[1]
         $userURL = $absoluteURLObject.segments[2]
@@ -239,13 +240,14 @@ function Get-Ninth{
         $encodedRelativeURL = $encodedRelativeURL.replace("_","%5f")
         $finalURL = "https://${hostURL}/${userURL}/_api/web/GetList(@listUrl)/RenderListDataAsStream?@listUrl=%27%2F${encodedRelativeURL}%2FDocuments%27&View=&RootFolder=%2F${encodedRelativeURL}%2FDocuments%2FShared%20with%20Everyone"
         $contentType = "application/json;odata=verbose"
+        $bonusURL = "https://${hostURL}/${userURL}/Documents/Shared%20with%20Everyone/"
         $Body = 
 @"
 {"parameters":{"__metadata":{"type":"SP.RenderListDataParameters"},"ViewXml":"<View ><Query><OrderBy><FieldRef Name=\"LinkFilename\" Ascending=\"true\"></FieldRef></OrderBy></Query><ViewFields><FieldRef Name=\"FSObjType\"/><FieldRef Name=\"LinkFilename\"/><FieldRef Name=\"Modified\"/><FieldRef Name=\"Editor\"/><FieldRef Name=\"FileSizeDisplay\"/><FieldRef Name=\"SharedWith\"/><FieldRef Name=\"_ip_UnifiedCompliancePolicyUIAction\"/><FieldRef Name=\"ItemChildCount\"/><FieldRef Name=\"FolderChildCount\"/><FieldRef Name=\"SMTotalFileCount\"/><FieldRef Name=\"SMTotalSize\"/></ViewFields><RowLimit Paged=\"TRUE\">100</RowLimit></View>","AllowMultipleValueFilterForTaxonomyFields":true}}
 "@
         try{
         $webRequest9 = Invoke-WebRequest -WebSession $session -Method POST -Uri $finalURL -userAgent $userAgent -ContentType $contentType -Body $body | Select-Object -ExpandProperty content
-        Parse-Results $webRequest9 $user
+        Parse-Results $webRequest9 $user $bonusURL
         } 
         catch{
             $err_message=("`r`nFYI, some exception occurred that prevented access to " + $user + "`'s Shared with Everyone Folder.`r`nMaybe the folder doesn't exist?`r`n")
@@ -254,16 +256,41 @@ function Get-Ninth{
     }
 }
 
+
 function Parse-Results{
+    $crlf = "`r`n"
+    $dummy = ""
+    $userHeader = "----------`r`n-- User --`r`n----------"
+    $fileHeader = "----------`r`n- Files -`r`n----------"
+    $linkHeader = "----------`r`n- Links -`r`n----------"
+    $footer = "--------------------"
     $parse = Select-String "(?<=FileLeafRef`"`:\s`").+(?=`",)" -InputObject $webRequest9 -AllMatches | foreach {$_.Matches} | Select-Object -ExpandProperty value
     $parse_obj = New-Object psobject
     $parse_obj | Add-Member NoteProperty name ($user)
     $parse_obj | Add-Member NoteProperty result ($parse)
     if ($parse_obj.result -eq $null){
-        echo ($user + "`'s `"Shared with Everyone`" Folder Appears Empty to You")
+        $empty = ($user + "`'s `"Shared with Everyone`" Folder Appears Empty to You `r`n")
+        $empty | Out-File -filepath $outFile -Append -NoClobber
+        Write-Host $empty
+    }
+    elseif ($parse_obj.result -is [array]) {
+        $userHeader, $parse_obj.name, $dummy, $fileHeader, $parse_obj.result, $dummy, $linkHeader | Out-File -filepath $outFile -Append -NoClobber
+            foreach ($res in $parse_obj.result){
+                $pos = $parse_obj.result.IndexOf($res)
+                $location = $bonusURL + $parse_obj.result[$pos]
+                $parse_obj | Add-Member NoteProperty link ($location) -Force
+                $parse_obj.link, $footer | Out-File  -filepath $outFile -Append -NoClobber
+            }
+        Write-Host $user "`r`n" $parse_obj.result "`r`n" | Format-Table -Wrap -AutoSize
+        $crlf | Out-File -filepath $outFile -Append -NoClobber -NoNewline
     }
     else{
-        Write-Output $parse_obj | Format-Table -Wrap
+        $location = "${bonusURL}${parse}"
+        $userHeader, $parse_obj.name, $dummy | Out-File -filepath $outFile -Append -NoClobber
+        $parse_obj | Add-Member NoteProperty link ($location) -Force
+        $fileHeader, $parse_obj.result, $dummy, $linkHeader, $parse_obj.link, $dummy, $footer | Out-File  -filepath $outFile -Append -NoClobber
+        Write-Host $user "`r`n" $parse_obj.result "`r`n" | Format-Table -Wrap -AutoSize
+        $crlf | Out-File -filepath $outFile -Append -NoClobber -NoNewline
     }
 }
 
@@ -271,5 +298,5 @@ function Set-Failure{
     ###Error Handling
     Write-Host -ForegroundColor:Red $err_message
 }
-Set-Proxy
+
 Get-Cred
